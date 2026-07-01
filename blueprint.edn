@@ -1,0 +1,10 @@
+{:itonami.blueprint/id "cloud-itonami-isco-9312"
+ :itonami.blueprint/name "Independent Civil Labour Crew"
+ :itonami.blueprint/isco-08 "9312"
+ :itonami.blueprint/domain :construction/civil-labour
+ :itonami.blueprint/license "AGPL-3.0-or-later"
+ :itonami.blueprint/social-impact [:local-jobs :worker-safety :infrastructure]
+ :itonami.blueprint/governor :civil-labour-governor
+ :itonami.blueprint/robotics true
+ :itonami.blueprint/required-technologies [:robotics :forms :telemetry :dmn :bpmn :audit-ledger]
+ :itonami.blueprint/status :public-oss}
