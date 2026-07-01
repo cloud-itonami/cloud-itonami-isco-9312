@@ -45,6 +45,32 @@ Resolves via [`kotoba-lang/occupation`](https://github.com/kotoba-lang/occupatio
 See [`docs/business-model.md`](docs/business-model.md) and
 [`docs/operator-guide.md`](docs/operator-guide.md).
 
+## Reference implementation
+
+`src/civil_labour/{store,governor}.cljc` is a minimal but real
+implementation of the Core Contract above (pure cljc, no external deps):
+
+- `civil-labour.store` — `Store` protocol + `MemStore`: sites, work orders,
+  labor tasks, inspections. A labor task/inspection can only be recorded
+  against a registered work order on a registered site (work-order
+  provenance).
+- `civil-labour.governor` — `CivilLabourGovernor`: `assess` gates a
+  proposal against the work-order/site env. Hard invariants force `:hold`
+  (no work order, direct-write instead of `:propose`, or a
+  `:near-excavation` task on a `has-excavation?` site below `:high`
+  safety-class); `:high`/`:safety-critical` and low-confidence proposals
+  escalate to `:human-approval` — a near-excavation task can never be
+  auto-approved.
+
+```bash
+clojure -M:test   # 7 tests, 13 assertions, green
+```
+
+This is what backs this repo's `:maturity :implemented` entry in
+[`kotoba-lang/occupation`](https://github.com/kotoba-lang/occupation) —
+the 5th `cloud-itonami-isco-*` occupation to reach that tier, after
+`cloud-itonami-isco-6112`, `-2221`, `-7126` and `-4321` (ADR-2607012000).
+
 ## License
 
 AGPL-3.0-or-later.
