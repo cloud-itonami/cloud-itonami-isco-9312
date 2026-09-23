@@ -1,5 +1,5 @@
 (ns civil-labour.governor-test
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [kotoba.test :refer [deftest is testing]]
             [civil-labour.store :as store]
             [civil-labour.governor :as governor]))
 
