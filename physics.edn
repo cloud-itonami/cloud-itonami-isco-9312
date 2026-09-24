@@ -1,0 +1,35 @@
+;; What this vertical's robot physically does, declared for
+;; kotoba.robotics.process (kotoba-lang/robotics). `kbb -M:physics` runs it.
+;;
+;; README "Robotics premise": a heavy-lifting exoskeleton and site-prep robot
+;; assists civil-engineering labourers with material handling and site
+;; clearing (ISCO 9312). Its physical work: the exoskeleton's shoulder drive
+;; carrying the load when a labourer lifts a kerbstone/cement bag from the
+;; ground onto a pallet, and a tracked site-prep robot hauling cleared rubble
+;; up the trench-side ramp.
+;;
+;; Every number without a cited source is marked `estimate` in its :basis.
+;; Replacing an estimate with a sourced value is this bot's growth work.
+{:physics/schema "itonami.physical-ai.spec.v1"
+ :repo "cloud-itonami/cloud-itonami-isco-9312"
+ :cases
+ [{:id :exo-lift-kerbstone
+   :kind :manipulator
+   :procedure "exoskeleton shoulder/elbow (upper arm 0.32 m, forearm 0.35 m) lifts a kerbstone or cement bag from knee height to a pallet at chest height"
+   :params {:l1-m 0.32 :l2-m 0.35 :m1-kg 2.5 :m2-kg 1.8
+            :from [0.40 -0.35] :to [0.45 0.15] :duration-s 1.5 :steps 400}
+   :sweep {:param :payload-kg :values [10.0 15.0 20.0 25.0 30.0]}
+   :quantity :peak-tau1-nm
+   :limit {:max 120.0 :basis "estimate: peak shoulder assist torque of a powered industrial upper-body exoskeleton"}
+   :boundary {:lo 1.0 :hi 60.0}}
+  {:id :rubble-up-trench-ramp
+   :kind :transport
+   :procedure "tracked site-prep robot hauls a skip of cleared rubble 30 m up the trench-side access ramp"
+   :params {:mass-kg 300.0 :payload-kg 250.0 :distance-m 30.0 :v-max-mps 0.8 :a-max-mps2 0.3
+            :brake-decel-mps2 0.6 :drive-force-n 2500.0 :crr 0.12
+            :cog-height-m 0.45 :support-half-length-m 0.50 :payload-cog-height-m 0.70
+            :max-time-s 1200.0}
+   :sweep {:param :slope-deg :values [0.0 5.0 10.0 15.0 20.0]}
+   :quantity :cycle-time-s
+   :limit {:max 60.0 :basis "estimate: one haul while the excavator refills the next skip"}
+   :boundary {:lo 0.0 :hi 30.0}}]}
