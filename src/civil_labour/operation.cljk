@@ -1,0 +1,146 @@
+(ns civil-labour.operation
+  "OperationActor -- one civil-labour proposal (labor task / inspection)
+  = one supervised actor run, expressed as a REAL
+  `langgraph.graph/state-graph` (same shape as `plumbing.operation`,
+  cloud-itonami-isco-7126). This is the ONLY path from a proposal to
+  `civil-labour.store`: the proposal is ALWAYS routed through the
+  EXISTING, UNMODIFIED `civil-labour.governor/assess` before any
+  `record-labor-task!` / `record-inspection!` call.
+
+  ```text
+  :intake -> :govern -+-> :commit                              (:proceed)
+                      +-> :request-approval -+-> :commit        (:human-approval, interrupt-before,
+                      |                      +-> :hold          human decides)
+                      +-> :hold                                 (HARD violation)
+  ```
+
+  The Site Advisor is out of this ns: the request IS its proposal
+  (`{:op :labor-task/propose|:inspection/propose :order-id .. :kind ..
+  :safety-class .. :effect :propose :confidence .. :value {..}}`).
+  The governor is NOT injected -- it is the actor's own fixed
+  independent safety layer, called directly via `env-for-store`/`assess`.
+  The Store is injected (`civil-labour.store/mem-store` today).
+
+  One graph run = one proposal. Human-in-the-loop is a real pause:
+  `interrupt-before #{:request-approval}` checkpoints the run until a
+  human calls `approve!` or `reject!` on the SAME graph/thread-id. A
+  resume without an explicit `:approved` status fails CLOSED to :hold."
+  (:require [langgraph.graph :as g]
+            [langgraph.checkpoint :as cp]
+            [civil-labour.governor :as governor]
+            [civil-labour.store :as store]))
+
+;; ----------------------------- store adapter -----------------------------
+
+(defn- commit-record!
+  "Dispatch a governor-cleared proposal to the ONE matching EXISTING
+  `civil-labour.store` append fn for its :op. An unknown :op writes
+  nothing."
+  [st {:keys [op order-id kind value]}]
+  (case op
+    :labor-task/propose
+    (store/record-labor-task!
+     st (assoc value :order-id order-id :kind kind
+               :task-id (str "task-" order-id "-" (count (store/labor-tasks-of st order-id)))))
+    :inspection/propose
+    (store/record-inspection!
+     st (assoc value :order-id order-id
+               :inspection-id (str "inspection-" order-id "-" (count (store/inspections-of st order-id)))))
+    nil))
+
+;; ----------------------------- nodes -----------------------------
+
+(defn- decide
+  [{:keys [proposal verdict]}]
+  (case (:decision verdict)
+    :proceed
+    {:disposition :commit}
+
+    :human-approval
+    {:disposition :escalate
+     :audit [{:t :approval-requested :op (:op proposal) :order-id (:order-id proposal)
+               :reason (or (:reason verdict) :safety-class)
+               :confidence (:confidence verdict)}]}
+
+    ;; :hold and anything the governor may add later fail closed
+    {:disposition :hold
+     :audit [{:t :governor-hold :op (:op proposal) :order-id (:order-id proposal)
+               :violations (:violations verdict)
+               :confidence (:confidence verdict)}]}))
+
+(defn- request-approval-node
+  "Runs only on a resume (`approve!`/`reject!`); the first pass pauses
+  BEFORE it. Absence of an explicit `:approved` status holds."
+  [{:keys [proposal approval]}]
+  (if (= :approved (:status approval))
+    {:disposition :commit
+     :audit [{:t :approval-granted :op (:op proposal) :order-id (:order-id proposal)
+               :by (:by approval)}]}
+    {:disposition :hold
+     :audit [{:t :approval-rejected :op (:op proposal) :order-id (:order-id proposal)
+               :by (:by approval)}]}))
+
+(defn- commit-node
+  [st {:keys [proposal approval]}]
+  (commit-record! st (cond-> proposal
+                       (:by approval) (assoc-in [:value :approved-by] (:by approval))))
+  {:audit [{:t :committed :op (:op proposal) :order-id (:order-id proposal)
+             :confidence (:confidence proposal)}]})
+
+;; ----------------------------- build -----------------------------
+
+(defn build
+  "Compiles an OperationActor graph bound to `store`."
+  [store & [{:keys [checkpointer] :or {checkpointer (cp/mem-checkpointer)}}]]
+  (-> (g/state-graph
+       {:channels
+        {:proposal    {:default nil}
+         :verdict     {:default nil}
+         :disposition {:default nil}
+         :approval    {:default nil}
+         :audit       {:reducer into :default []}}})
+      (g/add-node :intake (fn [{:keys [proposal]}]
+                            {:audit [{:t :proposal-received :op (:op proposal)
+                                       :order-id (:order-id proposal)}]}))
+      (g/add-node :govern (fn [{:keys [proposal] :as s}]
+                            (let [verdict (governor/assess (governor/env-for-store store) proposal)]
+                              (merge {:verdict verdict} (decide (assoc s :verdict verdict))))))
+      (g/add-node :commit (partial commit-node store))
+      (g/add-node :hold (fn [_] {}))
+      (g/add-node :request-approval request-approval-node)
+      (g/set-entry-point :intake)
+      (g/add-edge :intake :govern)
+      (g/add-conditional-edges :govern
+        (fn [{:keys [disposition]}]
+          (case disposition
+            :commit   :commit
+            :escalate :request-approval
+            :hold)))
+      (g/add-conditional-edges :request-approval
+        (fn [{:keys [disposition]}]
+          (if (= :commit disposition) :commit :hold)))
+      (g/set-finish-point :commit)
+      (g/set-finish-point :hold)
+      (g/compile-graph {:checkpointer checkpointer
+                        :interrupt-before #{:request-approval}})))
+
+;; ----------------------------- run -----------------------------
+
+(defn run-request!
+  "Run one proposal through the compiled graph. `:status :interrupted`
+  with `:frontier [:request-approval]` = paused awaiting human sign-off."
+  [compiled-graph proposal thread-id]
+  (g/run* compiled-graph {:proposal proposal} {:thread-id thread-id}))
+
+(defn approve!
+  "A human operator's approval of a run parked at `:request-approval`."
+  [compiled-graph thread-id by]
+  (g/run* compiled-graph {:approval {:status :approved :by by}}
+          {:thread-id thread-id :resume? true}))
+
+(defn reject!
+  "A human operator's rejection: the SAME thread resumes into :hold and
+  nothing is written to `civil-labour.store`."
+  [compiled-graph thread-id by]
+  (g/run* compiled-graph {:approval {:status :rejected :by by}}
+          {:thread-id thread-id :resume? true}))
