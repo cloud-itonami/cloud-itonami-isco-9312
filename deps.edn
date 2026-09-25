@@ -3,6 +3,11 @@
         ;; kotoba.robotics.process: the process-physics solvers and probe this
         ;; repo's physics.edn runs on (physical-AI bot, scripts/physical-ai-bots).
         io.github.kotoba-lang/robotics {:local/root "../../kotoba-lang/robotics"}
+        ;; kotoba-lang/langgraph is civil-labour.operation's StateGraph runtime
+        ;; (same layering as cloud-itonami-isco-7126); langchain is its sole dep,
+        ;; pinned to the workspace checkout like every sibling actor.
+        io.github.kotoba-lang/langgraph {:local/root "../../kotoba-lang/langgraph"}
+        io.github.kotoba-lang/langchain {:local/root "../../kotoba-lang/langchain"}
 
         ;; kotoba.test (clojure.test-compatible surface), not clojure.test --
         ;; scripts/migrate-clojure-test-to-kotoba-test.cljk. Explicit floor.

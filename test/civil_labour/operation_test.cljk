@@ -1,0 +1,83 @@
+(ns civil-labour.operation-test
+  "Integration tests for `civil-labour.operation`: every route of the REAL
+  compiled graph, asserted against the ORIGINAL store instance, so a
+  passing test proves what is (and is not) durably recorded -- above all
+  that a governor refusal never reaches `record-labor-task!`."
+  (:require [kotoba.test :refer [deftest is testing]]
+            [civil-labour.operation :as operation]
+            [civil-labour.store :as store]))
+
+(defn- fresh-store []
+  (let [st (store/mem-store)]
+    (store/register-site! st {:site-id "site-1" :has-excavation? true})
+    (store/register-work-order! st {:order-id "order-1" :site-id "site-1" :scope "trench backfill"})
+    st))
+
+(defn- task [overrides]
+  (merge {:op :labor-task/propose :order-id "order-1" :kind :standard
+          :safety-class :low :effect :propose :confidence 0.9
+          :value {:performed-by :crew}}
+         overrides))
+
+(deftest clean-standard-task-commits
+  (let [st (fresh-store)
+        r (operation/run-request! (operation/build st) (task {}) "t-commit")]
+    (is (= :done (:status r)))
+    (is (= :commit (get-in r [:state :disposition])))
+    (let [[t & more] (store/labor-tasks-of st "order-1")]
+      (is (nil? more))
+      (is (= "task-order-1-0" (:task-id t)))
+      (is (= :crew (:performed-by t))))
+    (is (some #(= :committed (:t %)) (get-in r [:state :audit])))))
+
+(deftest inspection-commits-to-inspections-only
+  (let [st (fresh-store)
+        r (operation/run-request! (operation/build st)
+                                  (task {:op :inspection/propose :kind :inspection
+                                         :value {:result :pass}})
+                                  "t-insp")]
+    (is (= :commit (get-in r [:state :disposition])))
+    (is (= [:pass] (map :result (store/inspections-of st "order-1"))))
+    (is (empty? (store/labor-tasks-of st "order-1")))))
+
+(deftest governor-refusal-writes-nothing
+  (testing "each HARD rule, named by its literal, routes to :hold in the same
+            run and the store stays empty"
+    (doseq [[rule p] [[:no-work-order (task {:order-id "no-such-order"})]
+                      [:no-actuation (task {:effect :direct-write})]
+                      [:excavation-safety (task {:kind :near-excavation :safety-class :medium})]]]
+      (let [st (fresh-store)
+            r (operation/run-request! (operation/build st) p (str "t-hold-" (name rule)))
+            hold (first (filter #(= :governor-hold (:t %)) (get-in r [:state :audit])))]
+        (is (= :done (:status r)) (str rule " resolves without interrupting"))
+        (is (= :hold (get-in r [:state :disposition])) (str rule))
+        (is (some #(= rule (:rule %)) (:violations hold)) (str rule " is the recorded reason"))
+        (is (empty? (store/labor-tasks-of st (:order-id p))) (str rule " wrote nothing"))))))
+
+(deftest near-excavation-pauses-then-approve-commits
+  (let [st (fresh-store)
+        g (operation/build st)
+        r (operation/run-request! g (task {:kind :near-excavation :safety-class :high}) "t-appr")]
+    (is (= :interrupted (:status r)))
+    (is (= [:request-approval] (vec (:frontier r))))
+    (is (empty? (store/labor-tasks-of st "order-1")) "nothing is written while paused")
+    (let [r2 (operation/approve! g "t-appr" "foreman-a")
+          [t] (store/labor-tasks-of st "order-1")]
+      (is (= :commit (get-in r2 [:state :disposition])))
+      (is (= :near-excavation (:kind t)))
+      (is (= "foreman-a" (:approved-by t))))))
+
+(deftest near-excavation-reject-writes-nothing
+  (let [st (fresh-store)
+        g (operation/build st)]
+    (operation/run-request! g (task {:kind :near-excavation :safety-class :high}) "t-rej")
+    (let [r (operation/reject! g "t-rej" "foreman-a")]
+      (is (= :hold (get-in r [:state :disposition])))
+      (is (empty? (store/labor-tasks-of st "order-1"))))))
+
+(deftest low-confidence-escalates-instead-of-committing
+  (let [st (fresh-store)
+        r (operation/run-request! (operation/build st) (task {:confidence 0.2}) "t-low")]
+    (is (= :interrupted (:status r)))
+    (is (some #(= :low-confidence (:reason %)) (get-in r [:state :audit])))
+    (is (empty? (store/labor-tasks-of st "order-1")))))
